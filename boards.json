@@ -1,5 +1,34 @@
 [
   {
+    "id": "board-1785344439552",
+    "title": "test",
+    "lastEdited": "Last edited just now",
+    "template": "blank",
+    "createdAt": "2026-07-29T17:00:39.562Z",
+    "data": [
+      {
+        "type": "rectangle",
+        "x": 382,
+        "y": 198,
+        "width": 457,
+        "height": 427,
+        "stroke": "#059669",
+        "fill": "transparent",
+        "strokeWidth": 1,
+        "id": "shape-1785345833079-kuz2jf8ku",
+        "parentFrameId": null
+      }
+    ]
+  },
+  {
+    "id": "board-1785344395494",
+    "title": "test",
+    "lastEdited": "Last edited just now",
+    "template": "blank",
+    "createdAt": "2026-07-29T16:59:55.517Z",
+    "data": []
+  },
+  {
     "id": "board-1785337346147",
     "title": "test",
     "lastEdited": "Last edited just now",

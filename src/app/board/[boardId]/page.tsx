@@ -2233,7 +2233,7 @@ export default function BoardPage({ params }: PageProps) {
               </svg>
             </div>
             <span className="text-md font-black tracking-wide text-indigo-650 dark:text-indigo-400">
-              SketchPad Pro
+              <Link href="/">PROTON</Link>
             </span>
           </div>
 
