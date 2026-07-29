@@ -1,0 +1,32 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Board {
+  id           String              @id
+  name         String
+  ownerId      String              @map("owner_id")
+  thumbnailUrl String?             @map("thumbnail_url")
+  template     String              @default("blank")
+  data         Json?               @default("[]")
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  collaborators BoardCollaborator[]
+
+  @@map("boards")
+}
+
+model BoardCollaborator {
+  boardId String @map("board_id")
+  userId  String @map("user_id")
+  role    String // 'editor' | 'viewer'
+  board   Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@id([boardId, userId])
+  @@map("board_collaborators")
+}

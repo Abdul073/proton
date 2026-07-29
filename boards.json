@@ -1,0 +1,59 @@
+[
+  {
+    "id": "board-1785337346147",
+    "title": "test",
+    "lastEdited": "Last edited just now",
+    "template": "blank",
+    "createdAt": "2026-07-29T15:02:26.147Z",
+    "data": []
+  },
+  {
+    "id": "board-1785334733752",
+    "title": "test",
+    "lastEdited": "Last edited just now",
+    "template": "blank",
+    "createdAt": "2026-07-29T14:18:53.752Z",
+    "data": [
+      {
+        "type": "rectangle",
+        "x": 367,
+        "y": 192,
+        "width": 345,
+        "height": 291,
+        "stroke": "#4f46e5",
+        "fill": "#e0e7ff",
+        "strokeWidth": 3,
+        "id": "shape-1785335415641-d6lu1iysj"
+      }
+    ]
+  },
+  {
+    "id": "board-1",
+    "title": "Q4 Strategy",
+    "lastEdited": "Last edited 2 hours ago",
+    "template": "mindmap",
+    "createdAt": "2026-07-29T12:17:10.840Z"
+  },
+  {
+    "id": "board-2",
+    "title": "Feature Ideation",
+    "lastEdited": "Last edited just now",
+    "template": "wireframe",
+    "createdAt": "2026-07-29T09:17:10.840Z",
+    "data": []
+  },
+  {
+    "id": "board-3",
+    "title": "User Flow V1",
+    "lastEdited": "Last edited yesterday",
+    "template": "flowchart",
+    "createdAt": "2026-07-28T14:17:10.840Z"
+  },
+  {
+    "id": "board-4",
+    "title": "Sprint Planning",
+    "lastEdited": "Last edited 2 days ago",
+    "template": "sprint",
+    "createdAt": "2026-07-27T14:17:10.840Z"
+  }
+]
