@@ -5,20 +5,7 @@
     "lastEdited": "Last edited just now",
     "template": "blank",
     "createdAt": "2026-07-29T17:00:39.562Z",
-    "data": [
-      {
-        "type": "rectangle",
-        "x": 382,
-        "y": 198,
-        "width": 457,
-        "height": 427,
-        "stroke": "#059669",
-        "fill": "transparent",
-        "strokeWidth": 1,
-        "id": "shape-1785345833079-kuz2jf8ku",
-        "parentFrameId": null
-      }
-    ]
+    "data": []
   },
   {
     "id": "board-1785344395494",
