@@ -8,6 +8,17 @@ import { useUser } from "@clerk/nextjs"
 import { useBoardStore, Shape } from "@/lib/useBoardStore"
 import { useTheme } from "next-themes"
 import rough from "roughjs"
+import { createClient } from "@supabase/supabase-js"
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+const getSupabaseClient = () => {
+  if (supabaseUrl && supabaseUrl.startsWith("http") && supabaseAnonKey) {
+    return createClient(supabaseUrl, supabaseAnonKey)
+  }
+  return null
+}
 
 interface PageProps {
   params: Promise<{ boardId: string }>
@@ -50,6 +61,18 @@ interface TableCellEditState {
   value: string
 }
 
+interface CommentData {
+  id: string
+  board_id: string
+  x: number
+  y: number
+  author_id: string
+  author_name: string
+  content: string
+  resolved: boolean
+  created_at: string
+}
+
 const HANDLE_RADIUS = 5
 
 export default function BoardPage({ params }: PageProps) {
@@ -88,7 +111,7 @@ export default function BoardPage({ params }: PageProps) {
   
   // Toolbar states
   const [activeTool, setActiveTool] = React.useState<
-    "select" | "rectangle" | "circle" | "arrow" | "line" | "pencil" | "text" | "eraser" | "sticky-note" | "frame"
+    "select" | "rectangle" | "circle" | "arrow" | "line" | "pencil" | "text" | "eraser" | "sticky-note" | "frame" | "comment"
   >("select")
   const [strokeColor, setStrokeColor] = React.useState("#4f46e5")
   const [fillColor, setFillColor] = React.useState("transparent")
@@ -113,7 +136,14 @@ export default function BoardPage({ params }: PageProps) {
   const [editingTableCell, setEditingTableCell] = React.useState<TableCellEditState | null>(null)
   const [tablePrompt, setTablePrompt] = React.useState<{ rows: number; cols: number } | null>(null)
   
+  const [comments, setComments] = React.useState<CommentData[]>([])
+  const [activeCommentThread, setActiveCommentThread] = React.useState<{ x: number; y: number } | null>(null)
+  const [tempCommentPin, setTempCommentPin] = React.useState<{ x: number; y: number } | null>(null)
+  const [showResolved, setShowResolved] = React.useState(true)
+  const [isViewOpen, setIsViewOpen] = React.useState(false)
+  
   const insertMenuRef = React.useRef<HTMLDivElement>(null)
+  const viewMenuRef = React.useRef<HTMLDivElement>(null)
   const imageInputRef = React.useRef<HTMLInputElement>(null)
   const imageCache = React.useRef<Map<string, HTMLImageElement>>(new Map())
 
@@ -187,11 +217,154 @@ export default function BoardPage({ params }: PageProps) {
     return () => clearTimeout(timer)
   }, [shapes, boardId])
 
-  // Close Insert dropdown when clicking outside
+  // Fetch Comments from Supabase (or LocalStorage fallback)
+  const fetchComments = React.useCallback(async () => {
+    const supabase = getSupabaseClient()
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("comments")
+        .select("*")
+        .eq("board_id", boardId)
+        .order("created_at", { ascending: true })
+      if (!error && data) {
+        setComments(data)
+      }
+    } else {
+      const localData = localStorage.getItem(`board-comments-${boardId}`)
+      if (localData) {
+        setComments(JSON.parse(localData))
+      }
+    }
+  }, [boardId])
+
+  // Save comments to localStorage and broadcast to other tabs (for sandbox testing)
+  const saveLocalComments = React.useCallback((newComments: CommentData[]) => {
+    localStorage.setItem(`board-comments-${boardId}`, JSON.stringify(newComments))
+    setComments(newComments)
+    if (typeof window !== "undefined") {
+      const channel = new BroadcastChannel(`board-comments-channel-${boardId}`)
+      channel.postMessage({ type: "sync", comments: newComments })
+      channel.close()
+    }
+  }, [boardId])
+
+  // Add Comment helper
+  const handleAddComment = React.useCallback(async (x: number, y: number, text: string) => {
+    const authorId = user?.id || "anon-user"
+    const authorName = user?.fullName || "Guest User"
+    
+    const supabase = getSupabaseClient()
+    if (supabase) {
+      const { error } = await supabase.from("comments").insert([
+        {
+          board_id: boardId,
+          x,
+          y,
+          author_id: authorId,
+          author_name: authorName,
+          content: text,
+          resolved: false,
+        },
+      ])
+      if (error) {
+        console.error("Error inserting comment", error)
+      } else {
+        fetchComments()
+      }
+    } else {
+      const newComment: CommentData = {
+        id: crypto.randomUUID(),
+        board_id: boardId,
+        x,
+        y,
+        author_id: authorId,
+        author_name: authorName,
+        content: text,
+        resolved: false,
+        created_at: new Date().toISOString(),
+      }
+      const updated = [...comments, newComment]
+      saveLocalComments(updated)
+    }
+  }, [boardId, user, comments, fetchComments, saveLocalComments])
+
+  // Resolve thread helper
+  const handleResolveThread = React.useCallback(async (x: number, y: number, resolvedState: boolean = true) => {
+    const supabase = getSupabaseClient()
+    if (supabase) {
+      const { error } = await supabase
+        .from("comments")
+        .update({ resolved: resolvedState })
+        .eq("board_id", boardId)
+        .eq("x", x)
+        .eq("y", y)
+      if (error) {
+        console.error("Error resolving comments", error)
+      } else {
+        fetchComments()
+      }
+    } else {
+      const updated = comments.map((c) =>
+        c.x === x && c.y === y ? { ...c, resolved: resolvedState } : c
+      )
+      saveLocalComments(updated)
+    }
+    setActiveCommentThread(null)
+  }, [boardId, comments, fetchComments, saveLocalComments])
+
+  // Realtime comments synchronizer
+  React.useEffect(() => {
+    fetchComments()
+    
+    const supabase = getSupabaseClient()
+    let channel: any = null
+    
+    if (supabase) {
+      channel = supabase
+        .channel(`comments-realtime-${boardId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "comments",
+            filter: `board_id=eq.${boardId}`,
+          },
+          () => {
+            fetchComments()
+          }
+        )
+        .subscribe()
+    }
+    
+    let localChannel: BroadcastChannel | null = null
+    if (typeof window !== "undefined") {
+      localChannel = new BroadcastChannel(`board-comments-channel-${boardId}`)
+      localChannel.onmessage = (event) => {
+        if (event.data?.type === "sync") {
+          setComments(event.data.comments)
+        }
+      }
+    }
+    
+    return () => {
+      if (supabase && channel) {
+        supabase.removeChannel(channel)
+      }
+      if (localChannel) {
+        localChannel.close()
+      }
+    }
+  }, [boardId, fetchComments])
+
+  // Close Insert and View dropdowns when clicking outside
   React.useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (insertMenuRef.current && !insertMenuRef.current.contains(e.target as Node)) {
         setIsInsertOpen(false)
+      }
+      if (viewMenuRef.current && !viewMenuRef.current.contains(e.target as Node)) {
+        setIsViewOpen(false)
       }
     }
     document.addEventListener("mousedown", handleOutsideClick)
@@ -294,6 +467,9 @@ export default function BoardPage({ params }: PageProps) {
       setSelectedShapeId(null)
     } else if (id === "table") {
       setTablePrompt({ rows: 3, cols: 3 })
+      setSelectedShapeId(null)
+    } else if (id === "comment") {
+      setActiveTool("comment")
       setSelectedShapeId(null)
     }
   }
@@ -556,6 +732,18 @@ export default function BoardPage({ params }: PageProps) {
     return false
   }
 
+  const getPinAtPoint = (px: number, py: number) => {
+    const pinRadius = 14
+    return comments.find((c) => {
+      // Find if this thread is resolved
+      const isThreadResolved = comments.filter((tc) => tc.x === c.x && tc.y === c.y).some((tc) => tc.resolved)
+      if (isThreadResolved && !showResolved) return false
+      
+      const dist = Math.sqrt(Math.pow(px - c.x, 2) + Math.pow(py - c.y, 2))
+      return dist <= pinRadius
+    })
+  }
+
   // Mouse Handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (textInput) return // Let text box handle its blur
@@ -563,6 +751,21 @@ export default function BoardPage({ params }: PageProps) {
     const coord = getCoordinates(e)
     const px = coord.x
     const py = coord.y
+
+    // Check if clicked an existing comment pin
+    const clickedPin = getPinAtPoint(px, py)
+    if (clickedPin) {
+      setActiveCommentThread({ x: clickedPin.x, y: clickedPin.y })
+      setTempCommentPin(null)
+      setSelectedShapeIds([])
+      return
+    }
+
+    if (activeTool === "comment") {
+      setTempCommentPin({ x: px, y: py })
+      setActiveCommentThread(null)
+      return
+    }
 
     if (activeTool === "select") {
       // 1. Check if clicked a handle of the selected shape
@@ -1397,8 +1600,86 @@ export default function BoardPage({ params }: PageProps) {
       })
     }
 
+    // 6. Draw Comment Pins
+    const pinRadius = 14
+    const threads: { [key: string]: CommentData[] } = {}
+    comments.forEach((c) => {
+      const key = `${c.x.toFixed(2)},${c.y.toFixed(2)}`
+      if (!threads[key]) threads[key] = []
+      threads[key].push(c)
+    })
+    
+    Object.keys(threads).forEach((key) => {
+      const thread = threads[key]
+      const firstComment = thread[0]
+      if (!firstComment) return
+      
+      const isThreadResolved = thread.some((tc) => tc.resolved)
+      if (isThreadResolved && !showResolved) return
+      
+      const px = firstComment.x
+      const py = firstComment.y
+      
+      ctx.save()
+      ctx.shadowColor = "rgba(0, 0, 0, 0.16)"
+      ctx.shadowBlur = 6
+      ctx.shadowOffsetY = 3
+      
+      ctx.beginPath()
+      ctx.arc(px, py, pinRadius, 0, 2 * Math.PI)
+      ctx.fillStyle = isThreadResolved ? "#9ca3af" : "#4f46e5"
+      ctx.fill()
+      
+      ctx.shadowColor = "transparent"
+      ctx.strokeStyle = "#ffffff"
+      ctx.lineWidth = 1.8
+      ctx.stroke()
+      
+      const initials = firstComment.author_name
+        ? firstComment.author_name
+            .split(" ")
+            .map((n) => n[0])
+            .join("")
+            .slice(0, 2)
+            .toUpperCase()
+        : "G"
+      
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "bold 9px sans-serif"
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      ctx.fillText(initials, px, py)
+      ctx.restore()
+    })
+    
+    if (tempCommentPin) {
+      const { x: px, y: py } = tempCommentPin
+      ctx.save()
+      ctx.shadowColor = "rgba(0, 0, 0, 0.2)"
+      ctx.shadowBlur = 6
+      ctx.shadowOffsetY = 3
+      
+      ctx.beginPath()
+      ctx.arc(px, py, pinRadius, 0, 2 * Math.PI)
+      ctx.fillStyle = "#6366f1"
+      ctx.fill()
+      
+      ctx.shadowColor = "transparent"
+      ctx.strokeStyle = "#ffffff"
+      ctx.lineWidth = 1.8
+      ctx.setLineDash([3, 2])
+      ctx.stroke()
+      
+      ctx.fillStyle = "#ffffff"
+      ctx.font = "bold 13px sans-serif"
+      ctx.textAlign = "center"
+      ctx.textBaseline = "middle"
+      ctx.fillText("+", px, py)
+      ctx.restore()
+    }
+
     ctx.restore()
-  }, [shapes, previewElement, selectedShapeIds, zoom, strokeColor, fillColor, strokeWidth, resolvedTheme])
+  }, [shapes, previewElement, selectedShapeIds, zoom, strokeColor, fillColor, strokeWidth, resolvedTheme, comments, showResolved, tempCommentPin])
 
   // Canvas Resize and Render Effect hook
   React.useEffect(() => {
@@ -1451,7 +1732,7 @@ export default function BoardPage({ params }: PageProps) {
         className="absolute inset-0 z-0 block outline-none"
         style={{
           cursor:
-            activeTool === "sticky-note" || activeTool === "frame"
+            activeTool === "sticky-note" || activeTool === "frame" || activeTool === "comment"
               ? "cell"
               : activeTool === "select"
               ? "default"
@@ -1789,6 +2070,159 @@ export default function BoardPage({ params }: PageProps) {
         />
       )}
 
+      {/* NEW COMMENT POPOVER */}
+      {tempCommentPin && (
+        <div
+          className="absolute bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl p-4 w-72 z-35 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-3"
+          style={{
+            left: getClientCoordinates(tempCommentPin.x, tempCommentPin.y).x + 10,
+            top: getClientCoordinates(tempCommentPin.x, tempCommentPin.y).y + 10,
+          }}
+        >
+          <div className="flex justify-between items-center">
+            <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Add Comment</span>
+            <button
+              onClick={() => setTempCommentPin(null)}
+              className="text-zinc-400 hover:text-zinc-655 dark:hover:text-zinc-200 text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+          <textarea
+            autoFocus
+            placeholder="Write a comment..."
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault()
+                const value = e.currentTarget.value.trim()
+                if (value) {
+                  handleAddComment(tempCommentPin.x, tempCommentPin.y, value)
+                  setTempCommentPin(null)
+                  setActiveTool("select")
+                }
+              }
+            }}
+            className="w-full text-xs bg-zinc-50 dark:bg-zinc-850 border border-zinc-200 dark:border-zinc-700 rounded-xl p-2.5 outline-none focus:border-indigo-500 text-zinc-900 dark:text-zinc-100"
+            style={{ minHeight: "64px", resize: "none" }}
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setTempCommentPin(null)}
+              className="px-3 py-1.5 text-[11px] font-bold text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={(e) => {
+                const textarea = e.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement
+                const value = textarea?.value?.trim()
+                if (value) {
+                  handleAddComment(tempCommentPin.x, tempCommentPin.y, value)
+                  setTempCommentPin(null)
+                  setActiveTool("select")
+                }
+              }}
+              className="px-3 py-1.5 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg cursor-pointer"
+            >
+              Comment
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* COMMENT THREAD POPOVER */}
+      {activeCommentThread && (
+        <div
+          className="absolute bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl p-4 w-80 z-35 animate-in fade-in zoom-in-95 duration-100 flex flex-col gap-3"
+          style={{
+            left: getClientCoordinates(activeCommentThread.x, activeCommentThread.y).x + 10,
+            top: getClientCoordinates(activeCommentThread.x, activeCommentThread.y).y + 10,
+          }}
+        >
+          <div className="flex justify-between items-center pb-1.5 border-b border-zinc-100 dark:border-zinc-800">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-zinc-850 dark:text-zinc-200">Comment Thread</span>
+              {comments.filter(c => Math.abs(c.x - activeCommentThread.x) < 0.05 && Math.abs(c.y - activeCommentThread.y) < 0.05).some(c => c.resolved) ? (
+                <span className="bg-zinc-100 dark:bg-zinc-800 text-zinc-500 text-[9px] font-black px-1.5 py-0.5 rounded">Resolved</span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1.5">
+              {comments.filter(c => Math.abs(c.x - activeCommentThread.x) < 0.05 && Math.abs(c.y - activeCommentThread.y) < 0.05).some(c => c.resolved) ? (
+                <button
+                  onClick={() => handleResolveThread(activeCommentThread.x, activeCommentThread.y, false)}
+                  className="text-[10px] text-indigo-600 hover:text-indigo-700 font-bold hover:underline cursor-pointer"
+                >
+                  Reopen
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleResolveThread(activeCommentThread.x, activeCommentThread.y, true)}
+                  className="text-[10px] text-emerald-600 hover:text-emerald-700 font-bold hover:underline cursor-pointer flex items-center gap-0.5"
+                >
+                  ✓ Resolve
+                </button>
+              )}
+              <button
+                onClick={() => setActiveCommentThread(null)}
+                className="text-zinc-400 hover:text-zinc-655 dark:hover:text-zinc-200 text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+            {comments
+              .filter((c) => Math.abs(c.x - activeCommentThread.x) < 0.05 && Math.abs(c.y - activeCommentThread.y) < 0.05)
+              .map((msg) => {
+                const dateText = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                return (
+                  <div key={msg.id} className="flex flex-col gap-0.5 bg-zinc-50 dark:bg-zinc-850 p-2 rounded-xl border border-zinc-100/50 dark:border-zinc-800/30">
+                    <div className="flex justify-between items-center text-[10px]">
+                      <span className="font-extrabold text-zinc-800 dark:text-zinc-200">{msg.author_name}</span>
+                      <span className="text-zinc-400">{dateText}</span>
+                    </div>
+                    <p className="text-xs text-zinc-650 dark:text-zinc-350 font-normal leading-normal whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                )
+              })}
+          </div>
+
+          <div className="flex items-center gap-2 mt-1">
+            <textarea
+              placeholder="Reply..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  const value = e.currentTarget.value.trim()
+                  if (value) {
+                    handleAddComment(activeCommentThread.x, activeCommentThread.y, value)
+                    e.currentTarget.value = ""
+                  }
+                }
+              }}
+              className="flex-1 text-xs bg-zinc-50 dark:bg-zinc-850 border border-zinc-200 dark:border-zinc-700 rounded-xl px-2.5 py-1.5 outline-none focus:border-indigo-500 text-zinc-900 dark:text-zinc-100"
+              style={{ minHeight: "32px", maxHeight: "80px", resize: "none" }}
+            />
+            <button
+              onClick={(e) => {
+                const textarea = e.currentTarget.previousElementSibling as HTMLTextAreaElement
+                const value = textarea?.value?.trim()
+                if (value) {
+                  handleAddComment(activeCommentThread.x, activeCommentThread.y, value)
+                  textarea.value = ""
+                }
+              }}
+              className="w-8 h-8 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center cursor-pointer shadow-md"
+            >
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12h15m0 0l-6.75-6.75M19.5 12l-6.75 6.75" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* HEADER SECTION */}
       <header className="absolute top-0 left-0 right-0 h-16 border-b border-zinc-200/80 dark:border-zinc-800/80 px-6 flex items-center justify-between bg-white/70 dark:bg-zinc-950/70 backdrop-blur-md z-20">
         <div className="flex items-center gap-8">
@@ -1939,9 +2373,34 @@ export default function BoardPage({ params }: PageProps) {
               )}
             </div>
             
-            <button className="hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors cursor-pointer">
-              View
-            </button>
+            {/* View Dropdown Menu */}
+            <div ref={viewMenuRef} className="relative">
+              <button
+                onClick={() => setIsViewOpen(!isViewOpen)}
+                className={`hover:text-zinc-900 dark:hover:text-zinc-200 transition-colors cursor-pointer flex items-center gap-1.5 py-1 px-2.5 rounded-lg hover:bg-zinc-100/50 dark:hover:bg-zinc-900/50 ${
+                  isViewOpen ? "text-zinc-950 dark:text-white bg-zinc-100 dark:bg-zinc-900" : ""
+                }`}
+              >
+                View
+                <svg className={`w-3.5 h-3.5 transition-transform duration-200 ${isViewOpen ? "rotate-180 text-indigo-600 dark:text-indigo-450" : "text-zinc-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+              </button>
+              
+              {isViewOpen && (
+                <div className="absolute left-0 mt-2 w-56 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md shadow-xl py-3 px-4.5 z-30 flex flex-col gap-2 animate-in fade-in slide-in-from-top-2 duration-150 text-xs text-zinc-650 dark:text-zinc-350">
+                  <label className="flex items-center gap-2.5 py-1.5 cursor-pointer font-semibold hover:text-zinc-900 dark:hover:text-zinc-250 select-none">
+                    <input
+                      type="checkbox"
+                      checked={showResolved}
+                      onChange={(e) => setShowResolved(e.target.checked)}
+                      className="rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 cursor-pointer"
+                    />
+                    Show Resolved Comments
+                  </label>
+                </div>
+              )}
+            </div>
           </nav>
         </div>
 

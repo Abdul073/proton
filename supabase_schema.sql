@@ -23,3 +23,22 @@ CREATE INDEX IF NOT EXISTS idx_boards_owner_id ON boards(owner_id);
 
 -- Add index on collaborators user_id for faster queries
 CREATE INDEX IF NOT EXISTS idx_board_collaborators_user_id ON board_collaborators(user_id);
+
+-- Comments table
+CREATE TABLE IF NOT EXISTS comments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  board_id TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+  x DOUBLE PRECISION NOT NULL,
+  y DOUBLE PRECISION NOT NULL,
+  author_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  content TEXT NOT NULL,
+  resolved BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+);
+
+-- Index on board_id for faster queries
+CREATE INDEX IF NOT EXISTS idx_comments_board_id ON comments(board_id);
+
+-- Enable Realtime for comments table to broadcast updates
+alter publication supabase_realtime add table comments;

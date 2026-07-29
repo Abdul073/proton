@@ -17,6 +17,7 @@ model Board {
   createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   collaborators BoardCollaborator[]
+  comments      Comment[]
 
   @@map("boards")
 }
@@ -29,4 +30,19 @@ model BoardCollaborator {
 
   @@id([boardId, userId])
   @@map("board_collaborators")
+}
+
+model Comment {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  boardId    String   @map("board_id")
+  x          Float
+  y          Float
+  authorId   String   @map("author_id")
+  authorName String   @map("author_name")
+  content    String
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  board      Board    @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@map("comments")
 }
